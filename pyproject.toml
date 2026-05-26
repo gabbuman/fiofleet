@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fiofleet"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bulk fleet operations for Foundries.io devices"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,7 +17,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/fiofleet"
+Homepage = "https://github.com/gabbuman/fiofleet"
+Repository = "https://github.com/gabbuman/fiofleet"
+Issues = "https://github.com/gabbuman/fiofleet/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "responses>=0.25"]

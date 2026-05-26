@@ -104,6 +104,30 @@ class FoundriesAPI:
         delta = datetime.now(timezone.utc) - ts
         return delta.total_seconds() <= ONLINE_THRESHOLD_SECONDS
 
+    # --- ota updates ---
+
+    def list_updates(self, name, limit=10):
+        """Recent OTA updates for a device, newest first.
+
+        Each item identifies one update attempt (a `correlation-id`) plus the
+        target/version it was moving to. The per-stage events live behind
+        `update_events`. Mirrors the data `fioctl devices list-updates` shows.
+        """
+        data = self._get(f"/devices/{name}/updates/", page=1, limit=limit)
+        return data.get("updates", data) if isinstance(data, dict) else data
+
+    def update_events(self, name, correlation_id):
+        """The ordered aktualizr event stream for a single update.
+
+        These are the libaktualizr report events (EcuDownloadStarted,
+        EcuInstallationCompleted, ...) the device posted to the device-gateway.
+        `updates.summarize` turns them into a staged pass/fail result.
+        """
+        data = self._get(f"/devices/{name}/updates/{correlation_id}/")
+        if isinstance(data, dict):
+            return data.get("events", data.get("Events", []))
+        return data or []
+
     # --- wireguard ---
 
     def wireguard_server(self):

@@ -7,7 +7,18 @@ import click
 from . import config
 from .api import FoundriesAPI
 from . import wireguard
+from . import updates as updates_mod
 from . import ssh as ssh_mod
+
+
+def _fanout(fn, items, parallel):
+    """Run fn over items in parallel, returning results in input order."""
+    results = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futs = {pool.submit(fn, it): i for i, it in enumerate(items)}
+        for fut in as_completed(futs):
+            results[futs[fut]] = fut.result()
+    return results
 
 
 def get_api():
@@ -197,6 +208,101 @@ def _run_wg_op(api, targets, op, wait, timeout, parallel, via_fioctl, fioctl_bin
             click.echo(f"{device}\t{status}\t{msg}")
 
 
+# --- ota update report ---
+
+@cli.group()
+def ota():
+    """OTA update reporting — what each device's last update did, and where it failed."""
+
+
+_RESULT_ORDER = ["FAILED", "IN_PROGRESS", "UNKNOWN", "SUCCESS"]
+
+
+def _truncate(s, width):
+    s = " ".join((s or "").split())  # collapse newlines/whitespace for one-line display
+    return s if len(s) <= width else s[: max(0, width - 3)] + "..."
+
+
+@ota.command("report")
+@_target_opts
+@click.option("--failed-only", is_flag=True, help="Only print devices whose last update failed.")
+@click.option("--json", "as_json", is_flag=True, help="Output full structured results as JSON.")
+@click.option("--parallel", default=10, type=int)
+def ota_report(name, tag, group, failed_only, as_json, parallel):
+    """Per-device report of the most recent OTA update, with the failed stage and error."""
+    api = get_api()
+    targets = resolve_targets(api, name, tag, group)
+
+    def worker(device):
+        try:
+            return updates_mod.latest(api, device)
+        except Exception as e:  # noqa: BLE001 — one bad device shouldn't sink the report
+            s = updates_mod.summarize({}, [])
+            s.update({"device": device, "result": "UNKNOWN", "error": f"lookup failed: {e}"})
+            return s
+
+    summaries = _fanout(worker, targets, parallel)
+    summary = updates_mod.fleet_summary(summaries)
+
+    if as_json:
+        click.echo(json.dumps({"devices": summaries, "summary": summary}, indent=2))
+        return
+
+    shown = [s for s in summaries if s["result"] == "FAILED"] if failed_only else summaries
+    shown = sorted(shown, key=lambda s: (_RESULT_ORDER.index(s["result"])
+                                         if s["result"] in _RESULT_ORDER else 99, s["device"]))
+
+    click.echo(f"{'DEVICE':<22}{'RESULT':<13}{'FAILED@':<11}{'TARGET':<30}WHEN")
+    for s in shown:
+        click.echo(
+            f"{_truncate(s['device'], 21):<22}"
+            f"{s['result']:<13}"
+            f"{(s['failed_stage'] or '-'):<11}"
+            f"{_truncate(s['target'] or '-', 29):<30}"
+            f"{s['time'] or '-'}"
+        )
+        if s["result"] == "FAILED" and s["error"]:
+            click.echo(f"    -> {s['failed_stage']}: {_truncate(s['error'], 100)}")
+
+    click.echo(f"\nFleet summary ({summary['total']} device(s)):")
+    for result in _RESULT_ORDER:
+        n = summary["by_result"].get(result)
+        if not n:
+            continue
+        extra = ""
+        if result == "FAILED" and summary["failed_by_stage"]:
+            extra = "   (" + ", ".join(f"{k}: {v}" for k, v in summary["failed_by_stage"].items()) + ")"
+        click.echo(f"  {result:<13}{n}{extra}")
+
+
+@ota.command("stages")
+@click.argument("device")
+@click.option("--limit", default=5, type=int, help="How many recent updates to show.")
+@click.option("--json", "as_json", is_flag=True)
+def ota_stages(device, limit, as_json):
+    """Stage-by-stage timeline of a single device's recent updates."""
+    api = get_api()
+    summaries = updates_mod.history(api, device, limit=limit)
+    if as_json:
+        click.echo(json.dumps(summaries, indent=2))
+        return
+    if not summaries:
+        click.echo(f"{device}: no update history")
+        return
+    click.echo(f"{device} — last {len(summaries)} update(s), newest first\n")
+    for s in summaries:
+        head = f"[{s['time'] or '?'}] {s['target'] or s['version'] or '?'}  {s['result']}"
+        if s["failed_stage"]:
+            head += f" at {s['failed_stage']}"
+        click.echo(head)
+        for st in s["stages"]:
+            line = f"    {st['stage']:<10}{st['status']:<9}{st['time'] or ''}"
+            if st["error"]:
+                line += f"   {_truncate(st['error'], 90)}"
+            click.echo(line)
+        click.echo("")
+
+
 # --- ssh / exec ---
 
 @cli.command("ssh")
@@ -217,29 +323,50 @@ def ssh_cmd(device, user, identity_file):
 @click.option("-i", "--identity", "identity_file", help="SSH private key file.")
 @click.option("--parallel", default=10, type=int)
 @click.option("--timeout", default=60, type=int)
-def exec_cmd(command, name, tag, group, user, identity_file, parallel, timeout):
-    """Run a shell command on one or more devices (requires wg tunnel up)."""
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON array of per-device results.")
+@click.option("--strict", is_flag=True, help="Exit non-zero if any device returns non-zero.")
+def exec_cmd(command, name, tag, group, user, identity_file, parallel, timeout, as_json, strict):
+    """Run a shell command on one or more devices (requires wg tunnel up).
+
+    Results are collected, not just streamed: `--json` emits a machine-readable
+    array (device, exit_code, ok, stdout, stderr) so you can drive scripts off
+    the outcome, and `--strict` makes the whole run exit non-zero if any device
+    failed.
+    """
     api = get_api()
     targets = resolve_targets(api, name, tag, group)
-    click.echo(f"Running on {len(targets)} device(s): {command}")
+    if not as_json:
+        click.echo(f"Running on {len(targets)} device(s): {command}")
 
     def worker(device):
         try:
             rc, out, err = ssh_mod.run_command(
                 device, command, user=user, timeout=timeout, identity_file=identity_file
             )
-            return device, rc, out, err
-        except Exception as e:  # noqa: BLE001
-            return device, -1, "", str(e)
+        except Exception as e:  # noqa: BLE001 — report per-device, keep going
+            rc, out, err = -1, "", str(e)
+        return {"device": device, "exit_code": rc, "ok": rc == 0, "stdout": out, "stderr": err}
 
-    with ThreadPoolExecutor(max_workers=parallel) as pool:
-        for fut in as_completed([pool.submit(worker, t) for t in targets]):
-            device, rc, out, err = fut.result()
-            click.echo(f"\n--- {device} (exit {rc}) ---")
-            if out:
-                click.echo(out.rstrip())
-            if err:
-                click.echo(err.rstrip(), err=True)
+    results = _fanout(worker, targets, parallel)
+    failures = [r for r in results if not r["ok"]]
+
+    if as_json:
+        click.echo(json.dumps(results, indent=2))
+    else:
+        for r in results:
+            click.echo(f"\n--- {r['device']} (exit {r['exit_code']}) ---")
+            if r["stdout"]:
+                click.echo(r["stdout"].rstrip())
+            if r["stderr"]:
+                click.echo(r["stderr"].rstrip(), err=True)
+        click.echo(
+            f"\n{len(results) - len(failures)}/{len(results)} ok"
+            + (f", {len(failures)} failed: {', '.join(r['device'] for r in failures)}" if failures else ""),
+            err=True,
+        )
+
+    if strict and failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
