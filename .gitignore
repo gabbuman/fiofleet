@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local secrets / state — never commit tokens or device material
+*.token
+config.local
+harness/.env
+harness/secrets/
+*.key
+*.pem
