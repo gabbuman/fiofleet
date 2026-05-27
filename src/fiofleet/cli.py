@@ -9,6 +9,48 @@ from .api import FoundriesAPI
 from . import wireguard
 from . import updates as updates_mod
 from . import ssh as ssh_mod
+from . import transport as transport_mod
+
+
+def build_transport(user, identity_file, server, server_user, server_key,
+                    device_password, direct):
+    """Pick how device ssh is reached: directly, or hopped through the bastion.
+
+    A bastion (the WireGuard server) is used when --server is given or a server
+    is saved in config, unless --direct forces the local path. Flags override
+    config; the device user is --user, else the saved device_user, else 'fio'.
+    """
+    cfg = None if direct else config.load_server()
+    host = server or (cfg["host"] if cfg else None)
+    device_user = user or (cfg["device_user"] if cfg else None) or "fio"
+
+    if not host:
+        return transport_mod.LocalTransport(user=device_user, identity_file=identity_file)
+
+    bastion = transport_mod.Bastion(
+        host=host,
+        user=server_user or (cfg["user"] if cfg else None) or "root",
+        port=(cfg["port"] if cfg else 22),
+        key_filename=server_key or (cfg["key"] if cfg else None),
+        password=(cfg["password"] if cfg else None),
+    )
+    return transport_mod.BastionTransport(
+        bastion,
+        device_user=device_user,
+        device_password=device_password or (cfg["device_password"] if cfg else None),
+        device_key=(cfg["device_key"] if cfg else None),
+    )
+
+
+def _bastion_opts(fn):
+    """Shared --server/... flags for ssh and exec."""
+    fn = click.option("--server", help="WireGuard-server bastion host to hop through "
+                                       "(else uses saved config).")(fn)
+    fn = click.option("--server-user", help="SSH user on the bastion.")(fn)
+    fn = click.option("--server-key", help="SSH private key for the bastion.")(fn)
+    fn = click.option("--device-password", help="Password for the device (sshpass on the bastion).")(fn)
+    fn = click.option("--direct", is_flag=True, help="Skip the bastion; ssh straight from this host.")(fn)
+    return fn
 
 
 def _fanout(fn, items, parallel):
@@ -73,6 +115,24 @@ def config_set(token, factory, api_base):
     click.echo(f"Saved to {path}")
 
 
+@config_cmd.command("set-server")
+@click.option("--server", prompt="WireGuard server host", help="Bastion host (the VPN server).")
+@click.option("--server-user", prompt="SSH user on the server", default="root")
+@click.option("--server-key", default=None, help="SSH private key for the server.")
+@click.option("--server-password", default=None, help="SSH password for the server (else key/agent).")
+@click.option("--device-user", default="fio", show_default=True, help="SSH user on devices.")
+@click.option("--device-password", default=None, help="Device password (sshpass), if not key-based.")
+def config_set_server(server, server_user, server_key, server_password,
+                      device_user, device_password):
+    """Store the WireGuard-server bastion that ssh/exec hop through."""
+    path = config.save_server(
+        server=server, server_user=server_user, server_key=server_key,
+        server_password=server_password, device_user=device_user,
+        device_password=device_password,
+    )
+    click.echo(f"Saved server settings to {path}")
+
+
 @config_cmd.command("show")
 def config_show():
     token, factory, api_base = config.load()
@@ -80,6 +140,12 @@ def config_show():
     click.echo(f"factory:  {factory or '(unset)'}")
     click.echo(f"token:    {masked}")
     click.echo(f"api_base: {api_base}")
+    srv = config.load_server()
+    if srv:
+        click.echo(f"server:   {srv['user']}@{srv['host']}:{srv['port']}"
+                   f"  (device user: {srv['device_user']})")
+    else:
+        click.echo("server:   (unset — ssh/exec run directly from this host)")
 
 
 # --- factories ---
@@ -307,11 +373,21 @@ def ota_stages(device, limit, as_json):
 
 @cli.command("ssh")
 @click.argument("device")
-@click.option("--user", default="fio")
-@click.option("-i", "--identity", "identity_file", help="SSH private key file.")
-def ssh_cmd(device, user, identity_file):
-    """Open an interactive SSH session to a device (requires wg tunnel up)."""
-    sys.exit(ssh_mod.interactive_shell(device, user=user, identity_file=identity_file))
+@click.option("--user", default=None, help="Device SSH user (default: fio / saved device_user).")
+@click.option("-i", "--identity", "identity_file", help="SSH private key file (direct mode).")
+@_bastion_opts
+def ssh_cmd(device, user, identity_file, server, server_user, server_key, device_password, direct):
+    """Open an interactive SSH session to a device.
+
+    By default this hops through the saved WireGuard-server bastion, so it works
+    from any machine; pass --direct to ssh straight from this host instead.
+    """
+    transport = build_transport(user, identity_file, server, server_user,
+                                server_key, device_password, direct)
+    try:
+        sys.exit(transport.interactive(device))
+    finally:
+        transport.close()
 
 
 @cli.command("exec")
@@ -319,35 +395,42 @@ def ssh_cmd(device, user, identity_file):
 @click.option("--name", help="Single device.")
 @click.option("--tag")
 @click.option("--group")
-@click.option("--user", default="fio")
-@click.option("-i", "--identity", "identity_file", help="SSH private key file.")
+@click.option("--user", default=None, help="Device SSH user (default: fio / saved device_user).")
+@click.option("-i", "--identity", "identity_file", help="SSH private key file (direct mode).")
 @click.option("--parallel", default=10, type=int)
 @click.option("--timeout", default=60, type=int)
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON array of per-device results.")
 @click.option("--strict", is_flag=True, help="Exit non-zero if any device returns non-zero.")
-def exec_cmd(command, name, tag, group, user, identity_file, parallel, timeout, as_json, strict):
-    """Run a shell command on one or more devices (requires wg tunnel up).
+@_bastion_opts
+def exec_cmd(command, name, tag, group, user, identity_file, parallel, timeout,
+             as_json, strict, server, server_user, server_key, device_password, direct):
+    """Run a shell command on one or more devices.
 
-    Results are collected, not just streamed: `--json` emits a machine-readable
-    array (device, exit_code, ok, stdout, stderr) so you can drive scripts off
-    the outcome, and `--strict` makes the whole run exit non-zero if any device
+    By default this hops through the saved WireGuard-server bastion (so it runs
+    from any machine); pass --direct to ssh straight from this host. Results are
+    collected, not just streamed: `--json` emits a machine-readable array
+    (device, exit_code, ok, stdout, stderr) so you can drive scripts off the
+    outcome, and `--strict` makes the whole run exit non-zero if any device
     failed.
     """
     api = get_api()
     targets = resolve_targets(api, name, tag, group)
+    transport = build_transport(user, identity_file, server, server_user,
+                                server_key, device_password, direct)
     if not as_json:
         click.echo(f"Running on {len(targets)} device(s): {command}")
 
     def worker(device):
         try:
-            rc, out, err = ssh_mod.run_command(
-                device, command, user=user, timeout=timeout, identity_file=identity_file
-            )
+            rc, out, err = transport.run(device, command, timeout=timeout)
         except Exception as e:  # noqa: BLE001 — report per-device, keep going
             rc, out, err = -1, "", str(e)
         return {"device": device, "exit_code": rc, "ok": rc == 0, "stdout": out, "stderr": err}
 
-    results = _fanout(worker, targets, parallel)
+    try:
+        results = _fanout(worker, targets, parallel)
+    finally:
+        transport.close()
     failures = [r for r in results if not r["ok"]]
 
     if as_json:

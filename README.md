@@ -20,8 +20,10 @@ optionally, `fioctl`).
   once, and *wait* until the platform confirms each device is a live VPN peer.
   Works through the config API directly, so `fioctl` is **not required**.
 - **Fan-out SSH/exec** — run a command (or open a shell) across a tag/group in
-  parallel over your Factory WireGuard tunnel, and collect the results as JSON
-  (`--json`) so you can drive scripts off them.
+  parallel, and collect the results as JSON (`--json`) so you can drive scripts
+  off them. Runs from *any* machine: fiofleet hops through your Factory
+  WireGuard server (a bastion) and SSHes to the devices from there, so the
+  operator doesn't need to be on the VPN.
 
 ## Install
 
@@ -48,6 +50,14 @@ export FOUNDRIES_FACTORY=my-factory
 
 Get your API token at https://app.foundries.io/settings/tokens/.
 
+To use `ssh`/`exec` from a machine that isn't on the device VPN, point fiofleet
+at your Factory WireGuard server (the bastion it hops through):
+
+```
+fiofleet config set-server --server vpn.example.com --server-user ops
+# add --device-password ... if your devices use password (sshpass) auth
+```
+
 ## Commands
 
 ```
@@ -72,12 +82,14 @@ fiofleet wg status --tag prod-eu
 fiofleet wg disable --tag prod-eu
 fiofleet wg enable my-device-01 --via-fioctl        # delegate to fioctl instead
 
-# SSH / exec (run from the Factory WireGuard server, where device names resolve)
+# SSH / exec (hops through the configured WireGuard-server bastion by default)
 fiofleet ssh my-device-01
 fiofleet exec "uptime" --tag prod-eu
 fiofleet exec "systemctl is-active aktualizr-lite" --tag prod-eu
 fiofleet exec "fiotest" --tag prod-eu --json        # collect results as JSON
 fiofleet exec "reboot" --tag prod-eu --strict       # non-zero exit if any device fails
+fiofleet exec "uptime" --tag prod-eu --server vpn.example.com   # ad-hoc bastion
+fiofleet exec "uptime" --name dev-01 --direct       # already on the VPN; skip the hop
 ```
 
 A typical `ota report` looks like:
@@ -120,10 +132,25 @@ view — the same one the [Factory WireGuard server](https://github.com/foundrie
 reads to learn its peers — so "applied" means the platform actually considers the
 device a live VPN peer, not just that a config was queued.
 
-For SSH to reach a device you need a route to it. That route lives on the Factory
-WireGuard server (it keeps `/etc/hosts` in sync with device VPN IPs), so run
-`fiofleet ssh`/`exec` from there — or from a host peered into the same VPN.
-fiofleet runs `ssh`; it doesn't manage the tunnel itself.
+## How ssh/exec reach a device (the jump-host model)
+
+A route to a device only exists on the Factory WireGuard server — it's peered
+into the VPN and keeps `/etc/hosts` in sync with device VPN IPs. Rather than
+require you to be on that box, fiofleet treats it as a **bastion**: it opens an
+SSH connection to the server (via [paramiko](https://www.paramiko.org/)) and
+runs the device `ssh` *there*. So:
+
+```
+your laptop ──SSH──► WireGuard server ──SSH──► device (10.42.42.x)
+ (anywhere)          (on the VPN)              (fio@…)
+```
+
+Device authentication therefore happens on the server — using the server's key,
+or a password via `sshpass` (`--device-password`) — exactly as an admin SSHing
+into the box by hand would. Configure the bastion once with
+`fiofleet config set-server` (or pass `--server` ad hoc); pass `--direct` to
+skip it when you're already on the VPN. fiofleet runs `ssh`; it doesn't manage
+the tunnel itself.
 
 ## Development
 

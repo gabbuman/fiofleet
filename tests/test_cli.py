@@ -15,6 +15,8 @@ def _auth(monkeypatch):
 
 def test_exec_json_collects_per_device_results(monkeypatch):
     _auth(monkeypatch)
+    # force the local transport (don't pick up any real saved bastion)
+    monkeypatch.setattr(cli.config, "load_server", lambda: None)
     outputs = {
         "dev1": (0, "hello\n", ""),
         "dev2": (1, "", "boom\n"),
@@ -34,6 +36,7 @@ def test_exec_json_collects_per_device_results(monkeypatch):
 
 def test_exec_strict_exits_nonzero_on_failure(monkeypatch):
     _auth(monkeypatch)
+    monkeypatch.setattr(cli.config, "load_server", lambda: None)
     monkeypatch.setattr(cli.ssh_mod, "run_command", lambda device, command, **kw: (2, "", "nope"))
     monkeypatch.setattr(cli, "resolve_targets", lambda *a, **k: ["dev1"])
     result = CliRunner().invoke(cli.cli, ["exec", "false", "--name", "dev1", "--strict"])
