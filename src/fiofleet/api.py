@@ -106,6 +106,11 @@ class FoundriesAPI:
 
     # --- ota updates ---
 
+    # The updates endpoint only accepts an enumerated set of page sizes;
+    # anything else (e.g. limit=1) is a 400. We snap up to the smallest valid
+    # size that covers the caller's limit, then slice locally.
+    UPDATE_PAGE_SIZES = (10, 20, 50, 100)
+
     def list_updates(self, name, limit=10):
         """Recent OTA updates for a device, newest first.
 
@@ -113,8 +118,11 @@ class FoundriesAPI:
         target/version it was moving to. The per-stage events live behind
         `update_events`. Mirrors the data `fioctl devices list-updates` shows.
         """
-        data = self._get(f"/devices/{name}/updates/", page=1, limit=limit)
-        return data.get("updates", data) if isinstance(data, dict) else data
+        page_size = next((s for s in self.UPDATE_PAGE_SIZES if s >= (limit or 0)),
+                         self.UPDATE_PAGE_SIZES[-1])
+        data = self._get(f"/devices/{name}/updates/", limit=page_size)
+        updates = data.get("updates", []) if isinstance(data, dict) else (data or [])
+        return updates[:limit] if limit else updates
 
     def update_events(self, name, correlation_id):
         """The ordered aktualizr event stream for a single update.

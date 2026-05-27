@@ -65,6 +65,34 @@ def test_find_vpn_address_no_server(monkeypatch):
         assert "server" in str(e).lower()
 
 
+# --- ota updates (page-size snapping) ---
+
+def test_list_updates_snaps_limit_to_valid_page_size(monkeypatch):
+    """The API rejects arbitrary page sizes; list_updates must snap, not 400."""
+    api = make_api()
+    seen = {}
+
+    def fake_get(path, **params):
+        seen["path"] = path
+        seen["limit"] = params.get("limit")
+        # pretend the server returned 3 updates regardless of page size
+        return {"updates": [{"correlation-id": f"c{i}"} for i in range(3)]}
+
+    monkeypatch.setattr(api, "_get", fake_get)
+
+    # limit=1 must NOT be sent verbatim (that's the bug that 400'd live)
+    out = api.list_updates("dev1", limit=1)
+    assert seen["limit"] in api.UPDATE_PAGE_SIZES
+    assert seen["limit"] == 10  # smallest valid size covering 1
+    assert len(out) == 1        # sliced back down to the requested count
+
+    api.list_updates("dev1", limit=20)
+    assert seen["limit"] == 20
+
+    api.list_updates("dev1", limit=30)
+    assert seen["limit"] == 50  # snaps up to the next valid size
+
+
 # --- enable / disable ---
 
 class _Recorder:
