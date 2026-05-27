@@ -15,6 +15,8 @@ htmlcov/
 
 # Local secrets / state — never commit tokens or device material
 *.token
+*api_token*
+foundries_api_token.txt
 config.local
 harness/.env
 harness/secrets/
