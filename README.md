@@ -2,11 +2,9 @@
 
 Bulk fleet operations for [Foundries.io](https://foundries.io) devices.
 
-`fioctl` is great for single-device work. **fiofleet** is for when you have fifty
-devices tagged `prod-eu`, you need to enable WireGuard on all of them, wait until
-each one's config is actually applied, then run a diagnostic command across the
-whole set. It's a thin, scriptable layer over the Foundries OTA API (and,
-optionally, `fioctl`).
+`fioctl` is great for single-device work. **fiofleet** is designed for when you have a large fleet of
+devices, and want to enable/disable wireguard vpn and run ssh commands remotely en masse.
+It's a thin, scriptable layer over the Foundries OTA API (and, optionally, `fioctl`).
 
 ## Features
 
