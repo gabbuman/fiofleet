@@ -291,16 +291,32 @@ def _truncate(s, width):
 
 @ota.command("report")
 @_target_opts
-@click.option("--failed-only", is_flag=True, help="Only print devices whose last update failed.")
+@click.option("--target", "target_filter",
+              help="Only include devices that attempted an update whose target/version "
+                   "matches this substring (case-insensitive). Per device, the most "
+                   "recent matching attempt is reported.")
+@click.option("--history-depth", default=50, type=int, show_default=True,
+              help="How many recent updates to search per device when --target is set.")
+@click.option("--failed-only", is_flag=True, help="Only print devices whose update failed.")
 @click.option("--json", "as_json", is_flag=True, help="Output full structured results as JSON.")
 @click.option("--parallel", default=10, type=int)
-def ota_report(name, tag, group, failed_only, as_json, parallel):
-    """Per-device report of the most recent OTA update, with the failed stage and error."""
+def ota_report(name, tag, group, target_filter, history_depth, failed_only, as_json, parallel):
+    """Per-device report of the most recent OTA update, with the failed stage and error.
+
+    With ``--target X``, restricts the report to devices that *attempted* an
+    update to a target matching X (success or failure), and reports each
+    device's most recent attempt at it. Without ``--target``, reports each
+    device's most recent update of any kind.
+    """
     api = get_api()
     targets = resolve_targets(api, name, tag, group)
 
     def worker(device):
         try:
+            if target_filter:
+                s = updates_mod.latest_attempt_at(api, device, target_filter,
+                                                  search_limit=history_depth)
+                return s  # None == device never tried this target; filtered out below
             return updates_mod.latest(api, device)
         except Exception as e:  # noqa: BLE001 — one bad device shouldn't sink the report
             s = updates_mod.summarize({}, [])
@@ -308,6 +324,8 @@ def ota_report(name, tag, group, failed_only, as_json, parallel):
             return s
 
     summaries = _fanout(worker, targets, parallel)
+    if target_filter:
+        summaries = [s for s in summaries if s is not None]
     summary = updates_mod.fleet_summary(summaries)
 
     if as_json:

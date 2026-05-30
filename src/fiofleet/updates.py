@@ -195,6 +195,32 @@ def history(api, name, limit=10):
     return [_summarize_one(api, name, u) for u in api.list_updates(name, limit=limit)]
 
 
+def _matches_target(update, needle):
+    """Case-insensitive substring match against target/version on an update row."""
+    needle = (needle or "").lower()
+    if not needle:
+        return True
+    for key in ("target", "targetName", "version"):
+        v = update.get(key)
+        if v and needle in str(v).lower():
+            return True
+    return False
+
+
+def latest_attempt_at(api, name, target, search_limit=50):
+    """Most recent update where the device attempted ``target`` (substring match).
+
+    Returns None if the device never tried it within the searched history. Use
+    this to answer "who tried target X, and how did it go?" — every match is a
+    real attempt, so the result is SUCCESS / FAILED / IN_PROGRESS / UNKNOWN as
+    usual, never the "no update history" sentinel.
+    """
+    for u in api.list_updates(name, limit=search_limit):
+        if _matches_target(u, target):
+            return _summarize_one(api, name, u)
+    return None
+
+
 def fleet_summary(summaries):
     """Aggregate per-device summaries into counts by result + failed-stage tally."""
     by_result = {}

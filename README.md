@@ -56,6 +56,23 @@ fiofleet config set-server --server vpn.example.com --server-user ops
 # add --device-password ... if your devices use password (sshpass) auth
 ```
 
+**Connecting to the server with an OpenSSH key** (e.g. an Azure VM running the
+Factory WireGuard server — the same `.pem`/OpenSSH key you'd use for `ssh -i`):
+
+```
+fiofleet config set-server \
+  --server my-fio-vpn.eastus.cloudapp.azure.com \
+  --server-user azureuser \
+  --server-key ~/.ssh/azure-fio-vpn.pem \
+  --device-user fio
+# device auth happens on the server: add --device-password ... if devices need
+# sshpass, otherwise omit (the server's own key reaches the devices).
+```
+
+`--server-key` is passed through to paramiko — anything `ssh -i` would accept
+works (`.pem`, `~/.ssh/id_ed25519`, …). Omit it to fall back to your SSH agent
+/ default keys, then password.
+
 ## Commands
 
 ```
@@ -71,6 +88,8 @@ fiofleet devices show my-device-01
 fiofleet ota report --tag prod-eu                   # last update per device + fleet summary
 fiofleet ota report --tag prod-eu --failed-only     # just the devices that failed
 fiofleet ota report --tag prod-eu --json            # structured, for dashboards/CI
+fiofleet ota report --tag prod-eu --target lmp-124  # every device that attempted target lmp-124
+fiofleet ota report --tag prod-eu --target lmp-124 --failed-only   # …and which of them failed
 fiofleet ota stages my-device-01                    # full stage timeline for one device
 
 # WireGuard
@@ -117,6 +136,12 @@ update `FAILED` at that stage and surfaces the `details` the device attached;
 an update that reached `EcuInstallationApplied` but not `…Completed` is
 `IN_PROGRESS` (applied, awaiting the post-reboot confirmation). No agent on the
 device is required — it's all read from the API.
+
+Pass `--target X` to scope the report to one rollout: each device's update
+history is searched (newest first) for an update whose target/version contains
+`X`, and only devices that *actually attempted* it appear in the output —
+their most recent attempt, with the same SUCCESS/FAILED/IN_PROGRESS verdict
+and failing-stage detail.
 
 ## How WireGuard works here
 

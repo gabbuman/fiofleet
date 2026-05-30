@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fiofleet"
-version = "0.4.0"
+version = "0.5.0"
 description = "Bulk fleet operations for Foundries.io devices"
 readme = "README.md"
 requires-python = ">=3.9"

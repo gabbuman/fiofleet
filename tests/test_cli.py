@@ -90,6 +90,29 @@ def test_ota_report_json_includes_fleet_summary(monkeypatch):
     assert "kernel panic" in failed["error"]
 
 
+def test_ota_report_target_filters_to_attempting_devices(monkeypatch):
+    _auth(monkeypatch)
+    monkeypatch.setattr(cli, "resolve_targets", lambda *a, **k: ["dev1", "dev2", "dev3"])
+    updates_by_dev = {
+        "dev1": [{"correlation-id": "c1", "target": "lmp-124"}],   # attempted lmp-124 (ok)
+        "dev2": [{"correlation-id": "c2", "target": "lmp-124"}],   # attempted lmp-124 (fail)
+        "dev3": [{"correlation-id": "c3", "target": "lmp-200"}],   # never attempted lmp-124
+    }
+    events_by_cid = {"c1": _events_success(), "c2": _events_install_fail()}
+    monkeypatch.setattr(FoundriesAPI, "list_updates",
+                        lambda self, name, limit=10: updates_by_dev[name])
+    monkeypatch.setattr(FoundriesAPI, "update_events",
+                        lambda self, name, cid: events_by_cid.get(cid, []))
+
+    result = CliRunner().invoke(cli.cli, ["ota", "report", "--tag", "x",
+                                          "--target", "lmp-124", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    names = {d["device"] for d in data["devices"]}
+    assert names == {"dev1", "dev2"}  # dev3 excluded — never attempted target
+    assert data["summary"]["by_result"] == {"SUCCESS": 1, "FAILED": 1}
+
+
 def test_ota_report_failed_only_text(monkeypatch):
     _auth(monkeypatch)
     monkeypatch.setattr(cli, "resolve_targets", lambda *a, **k: ["dev1", "dev2"])

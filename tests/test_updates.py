@@ -175,3 +175,32 @@ def test_history_returns_all_with_device_set():
     rows = updates.history(api, "dev1", limit=10)
     assert [r["correlation_id"] for r in rows] == ["a", "b"]
     assert all(r["device"] == "dev1" for r in rows)
+
+
+def test_latest_attempt_at_returns_most_recent_match():
+    # newest first; the target we want sits in the middle, with a later non-match on top
+    api = FakeAPI(
+        [
+            {"correlation-id": "newer", "target": "raspberrypi4-64-lmp-130"},
+            {"correlation-id": "match", "target": "raspberrypi4-64-lmp-124"},
+            {"correlation-id": "older-match", "target": "raspberrypi4-64-lmp-124"},
+        ],
+        {"match": success_stream()},
+    )
+    s = updates.latest_attempt_at(api, "dev1", "lmp-124")
+    assert s["correlation_id"] == "match"
+    assert s["result"] == updates.RESULT_SUCCESS
+
+
+def test_latest_attempt_at_returns_none_when_no_attempt():
+    api = FakeAPI([{"correlation-id": "x", "target": "lmp-200"}], {})
+    assert updates.latest_attempt_at(api, "dev1", "lmp-124") is None
+
+
+def test_latest_attempt_at_matches_version_field():
+    api = FakeAPI(
+        [{"correlation-id": "v", "version": "124"}],
+        {"v": success_stream()},
+    )
+    s = updates.latest_attempt_at(api, "dev1", "124")
+    assert s is not None and s["correlation_id"] == "v"
