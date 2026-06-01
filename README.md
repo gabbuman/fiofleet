@@ -175,15 +175,46 @@ into the box by hand would. Configure the bastion once with
 skip it when you're already on the VPN. fiofleet runs `ssh`; it doesn't manage
 the tunnel itself.
 
-## Development
+## Testing
 
 ```
 pip install -e ".[dev]"
 pytest
 ```
 
-A local end-to-end harness (real Pi WireGuard server + containerised devices) lives
-in [`harness/`](harness/README.md).
+**Unit tests** (50 tests, ~0.5s) cover the pieces that are easy to get wrong:
+
+- `test_api.py` — Foundries OTA API wrapper: auth header, factory scoping,
+  pagination, the page-size snap for the `updates/` endpoint.
+- `test_updates.py` — the OTA event → stage collapse logic
+  (download/install, SUCCESS / FAILED / IN\_PROGRESS / UNKNOWN), the
+  failing-stage + error detail surfacing, and `--target` history search.
+- `test_wireguard.py` — enable/disable, the `wireguard-ips` "is the device a
+  live peer yet" wait loop and timeout.
+- `test_transport.py` — local vs. paramiko bastion transport selection,
+  command quoting, `sshpass` wiring.
+- `test_cli.py` — end-to-end CLI wiring of the above: `exec --json`/`--strict`
+  exit codes, `ota report --json`, `--failed-only`, `--target` filtering.
+- `test_config.py` — token/factory + server bastion persistence.
+
+**Verified live against a real factory** (Foundries `fioup`/arm64-linux factory
+`shubhs-chocolate-factory`, two device containers behind a Pi WireGuard server —
+setup in [`harness/`](harness/README.md)):
+
+- `fiofleet factories`, `devices list`, `devices show`
+- `fiofleet wg enable / status / disable` end-to-end (config write → platform
+  allocates `10.42.42.x` → `wireguard-ips` confirms live peer)
+- `fiofleet ssh` and `fiofleet exec --json / --strict` over the paramiko bastion
+  from a non-VPN Windows host (laptop → Pi → device container)
+
+**Not yet live-verified:** the OTA event-stage parser is exercised heavily by
+unit tests, but the field names (`EcuDownloadCompleted`, `success`, `details`)
+come from the libaktualizr docs — both harness containers still have empty
+update history, so the parser has not been run against a real `fioup` event
+stream. A real OTA rollout is the next thing to drive through it.
+
+A local end-to-end harness (real Pi WireGuard server + containerised devices)
+lives in [`harness/`](harness/README.md).
 
 ## License
 

@@ -71,11 +71,17 @@ fiofleet wg enable --tag main           # allocates 10.42.42.x and writes device
 ./run-devices.sh connect dev-eu-01 dev-us-01
 ```
 
-## 4. Drive the fleet (from the WireGuard server)
+## 4. Drive the fleet (from your control host)
 
-`ssh`/`exec` must run where the route to devices lives — the VPN server:
+API calls (`devices`, `wg`, `ota`) run from anywhere. For `ssh`/`exec`, point
+fiofleet at the WireGuard server once — it will hop through it as a bastion
+(see the main README's "jump-host model"):
 
 ```bash
+fiofleet config set-server --server <vpn-server> --server-user <user>
+# add --server-key ~/.ssh/<key> if the server uses key auth,
+# and --device-password ... if your devices use sshpass auth.
+
 fiofleet devices list --tag main --online-only
 fiofleet wg status --tag main
 fiofleet exec "uname -srm; hostname" --tag main
